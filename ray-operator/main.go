@@ -22,6 +22,8 @@ import (
 	k8szap "sigs.k8s.io/controller-runtime/pkg/log/zap"
 
 	rayv1alpha1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1alpha1"
+	"github.com/ray-project/kuberay/ray-operator/controllers/ray/common"
+	"github.com/ray-project/kuberay/ray-operator/controllers/ray/common/global"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -47,6 +49,7 @@ func main() {
 	var probeAddr string
 	var reconcileConcurrency int
 	var watchNamespace string
+	var clusterUpgradeStrategy string
 	var logFile string
 	flag.BoolVar(&version, "version", false, "Show the version information.")
 	flag.StringVar(&metricsAddr, "metrics-addr", ":8080", "The address the metric endpoint binds to.")
@@ -61,9 +64,9 @@ func main() {
 		"Watch custom resources in the namespace, ignore other namespaces. If empty, all namespaces will be watched.")
 	flag.BoolVar(&ray.PrioritizeWorkersToDelete, "prioritize-workers-to-delete", true,
 		"Temporary feature flag - to be deleted after testing")
-	flag.BoolVar(&ray.ForcedClusterUpgrade, "forced-cluster-upgrade", false,
-		"Forced cluster upgrade flag")
-	flag.StringVar(&logFile, "log-file-path", "",
+	flag.StringVar(&clusterUpgradeStrategy, "cluster-upgrade-strategy", "recreate",
+		"Cluster upgrade strategy. options: recreate, rolling_update, default: recreate")
+	flag.StringVar(&logFile, "log-file-path", "/tmp/operator.log",
 		"Synchronize logs to local file")
 	flag.BoolVar(&ray.EnableBatchScheduler, "enable-batch-scheduler", false,
 		"Enable batch scheduler. Currently is volcano, which supports gang scheduler policy.")
@@ -110,12 +113,13 @@ func main() {
 	if ray.PrioritizeWorkersToDelete {
 		setupLog.Info("Feature flag prioritize-workers-to-delete is enabled.")
 	}
-	if ray.ForcedClusterUpgrade {
-		setupLog.Info("Feature flag forced-cluster-upgrade is enabled.")
-	}
+
 	if ray.EnableBatchScheduler {
 		setupLog.Info("Feature flag enable-batch-scheduler is enabled.")
 	}
+
+	ray.RayClusterUpgradeStrategy = common.RayClusterUpgradeStrategyType(clusterUpgradeStrategy)
+	setupLog.Info("setup upgrade strategy", "strategy", ray.RayClusterUpgradeStrategy)
 
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
 		Scheme:                 scheme,

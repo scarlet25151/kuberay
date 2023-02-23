@@ -22,6 +22,8 @@ const (
 	RayExternalStorageNSAnnotationKey = "ray.io/external-storage-namespace"
 	RayNodeHealthStateAnnotationKey   = "ray.io/health-state"
 
+	RayClusterRevisionAnnotationKey = "ray.io/cluster-revision"
+
 	// Pod health state values
 	PodUnhealthy = "Unhealthy"
 
@@ -122,4 +124,11 @@ const (
 	HeadService    ServiceType = "headService"
 	AgentService   ServiceType = "agentService"
 	ServingService ServiceType = "serveService"
+)
+
+type RayClusterUpgradeStrategyType string
+
+const (
+	RecreateUpgradeStrategy RayClusterUpgradeStrategyType = "recreate"
+	RollingUpgradeStrategy  RayClusterUpgradeStrategyType = "rolling_update"
 )

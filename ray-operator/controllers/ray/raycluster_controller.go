@@ -44,8 +44,8 @@ import (
 var (
 	DefaultRequeueDuration    = 2 * time.Second
 	PrioritizeWorkersToDelete bool
-	ForcedClusterUpgrade      bool
 	EnableBatchScheduler      bool
+	RayClusterUpgradeStrategy common.RayClusterUpgradeStrategyType
 
 	// Definition of a index field for pod name
 	podUIDIndexField = "metadata.uid"
@@ -402,6 +402,15 @@ func (r *RayClusterReconciler) reconcilePods(instance *rayiov1alpha1.RayCluster)
 	if len(headPods.Items) == 1 {
 		headPod := headPods.Items[0]
 		r.Log.Info("reconcilePods ", "head pod found", headPod.Name)
+		if common.GetPodRevision(headPod) != instance.Annotations[common.RayClusterRevisionAnnotationKey] {
+			if RayClusterUpgradeStrategy == common.RecreateUpgradeStrategy {
+				r.Log.Info(fmt.Sprintf("need to delete old head pod %s", headPods.Items[0].Name))
+				if err := r.Delete(context.TODO(), &headPods.Items[0]); err != nil {
+					return err
+				}
+				return nil
+			}
+		}
 		if headPod.Status.Phase == corev1.PodRunning || headPod.Status.Phase == corev1.PodPending {
 			r.Log.Info("reconcilePods", "head pod is up and running... checking workers", headPod.Name)
 		} else if headPod.Status.Phase == corev1.PodFailed && strings.Contains(headPod.Status.Reason, "Evicted") {
@@ -454,43 +463,6 @@ func (r *RayClusterReconciler) reconcilePods(instance *rayiov1alpha1.RayCluster)
 		}
 	}
 
-	if ForcedClusterUpgrade {
-		if len(headPods.Items) == 1 {
-			// head node amount is exactly 1, but we need to check if it has been changed
-			res := utils.PodNotMatchingTemplate(headPods.Items[0], instance.Spec.HeadGroupSpec.Template)
-			if res {
-				r.Log.Info(fmt.Sprintf("need to delete old head pod %s", headPods.Items[0].Name))
-				if err := r.Delete(context.TODO(), &headPods.Items[0]); err != nil {
-					return err
-				}
-				return nil
-			}
-		}
-
-		// check if WorkerGroupSpecs has been changed and we need to kill worker pods
-		for _, worker := range instance.Spec.WorkerGroupSpecs {
-			workerPods := corev1.PodList{}
-			filterLabels = client.MatchingLabels{common.RayClusterLabelKey: instance.Name, common.RayNodeGroupLabelKey: worker.GroupName}
-			if err := r.List(context.TODO(), &workerPods, client.InNamespace(instance.Namespace), filterLabels); err != nil {
-				return err
-			}
-			updatedWorkerPods := false
-			for _, item := range workerPods.Items {
-				if utils.PodNotMatchingTemplate(item, worker.Template) {
-					r.Log.Info(fmt.Sprintf("need to delete old worker pod %s", item.Name))
-					if err := r.Delete(context.TODO(), &item); err != nil {
-						r.Log.Info(fmt.Sprintf("error deleting worker pod %s", item.Name))
-						return err
-					}
-					updatedWorkerPods = true
-				}
-			}
-			if updatedWorkerPods {
-				return nil
-			}
-		}
-	}
-
 	// Reconcile worker pods now
 	for _, worker := range instance.Spec.WorkerGroupSpecs {
 		// workerReplicas will store the target number of pods for this worker group.
@@ -520,6 +492,16 @@ func (r *RayClusterReconciler) reconcilePods(instance *rayiov1alpha1.RayCluster)
 		for _, workerPod := range workerPods.Items {
 			if workerPod.Annotations == nil {
 				continue
+			}
+			if RayClusterUpgradeStrategy == common.RecreateUpgradeStrategy {
+				if common.GetPodRevision(workerPod) != instance.Annotations[common.RayClusterRevisionAnnotationKey] {
+					r.Log.Info(fmt.Sprintf("deleting worker pod %s because it is not up to date", workerPod.Name))
+					if err := r.Delete(context.TODO(), &workerPod); err != nil {
+						return err
+					}
+					// we are deleting one worker pod now, let's reconcile again later
+					return nil
+				}
 			}
 			if v, ok := workerPod.Annotations[common.RayNodeHealthStateAnnotationKey]; ok && v == common.PodUnhealthy {
 				r.Log.Info(fmt.Sprintf("deleting unhealthy worker pod %s", workerPod.Name))
@@ -723,6 +705,8 @@ func (r *RayClusterReconciler) createHeadPod(instance rayiov1alpha1.RayCluster) 
 			return err
 		}
 	}
+	// set the resource version of the pod to the resource version of the raycluster
+	common.SetPodWithClusterRevision(&pod, instance.Annotations[common.RayClusterRevisionAnnotationKey])
 
 	r.Log.Info("createHeadPod", "head pod with name", pod.GenerateName)
 	if err := r.Create(context.TODO(), &pod); err != nil {
@@ -760,6 +744,9 @@ func (r *RayClusterReconciler) createWorkerPod(instance rayiov1alpha1.RayCluster
 	}
 
 	replica := pod
+	// set the resource version of the pod to the resource version of the raycluster
+	common.SetPodWithClusterRevision(&replica, instance.Annotations[common.RayClusterRevisionAnnotationKey])
+
 	if err := r.Create(context.TODO(), &replica); err != nil {
 		if errors.IsAlreadyExists(err) {
 			fetchedPod := corev1.Pod{}
@@ -873,9 +860,13 @@ func (r *RayClusterReconciler) SetupWithManager(mgr ctrl.Manager, reconcileConcu
 	if EnableBatchScheduler {
 		b = batchscheduler.ConfigureReconciler(b)
 	}
-
+	predicates := predicate.Funcs{
+		CreateFunc: common.CreateRayClusterEvent,
+		UpdateFunc: common.UpdateRayClusterEvent,
+	}
 	return b.
 		WithOptions(controller.Options{MaxConcurrentReconciles: reconcileConcurrency}).
+		WithEventFilter(predicates).
 		Complete(r)
 }
 

@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "k8s.io/api/core/v1"
@@ -896,4 +897,55 @@ func ValidateHeadRayStartParams(rayHeadGroupSpec rayiov1alpha1.HeadGroupSpec) (i
 	}
 	// default return
 	return true, nil
+}
+
+func SetPodWithClusterRevision(pod *v1.Pod, clusterResourceVersion string) {
+	if pod.Annotations == nil {
+		pod.Annotations = make(map[string]string)
+	}
+	pod.Annotations[RayClusterRevisionAnnotationKey] = clusterResourceVersion
+}
+
+func GetPodRevision(pod v1.Pod) string {
+	if pod.Annotations == nil {
+		return ""
+	}
+	return pod.Annotations[RayClusterRevisionAnnotationKey]
+}
+
+func CreateRayClusterEvent(e event.CreateEvent) bool {
+	if e.Object.GetObjectKind().GroupVersionKind().Kind != "RayCluster" {
+		return true
+	}
+	annotations := e.Object.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	if _, ok := annotations[RayClusterRevisionAnnotationKey]; !ok {
+		annotations[RayClusterRevisionAnnotationKey] = fmt.Sprintf("%d", 0)
+	}
+	e.Object.SetAnnotations(annotations)
+	return true
+}
+
+func UpdateRayClusterEvent(e event.UpdateEvent) bool {
+	if e.ObjectNew.GetObjectKind().GroupVersionKind().Kind != "RayCluster" {
+		return true
+	}
+	oldAnnotation := e.ObjectOld.GetAnnotations()
+	newAnnotation := e.ObjectNew.GetAnnotations()
+	if v, ok := oldAnnotation[RayClusterRevisionAnnotationKey]; !ok {
+		oldAnnotation[RayClusterRevisionAnnotationKey] = fmt.Sprintf("%d", 0)
+		e.ObjectOld.SetAnnotations(oldAnnotation)
+		return false
+	} else {
+		oldVersion, _ := strconv.ParseInt(v, 10, 64)
+		newVersion := oldVersion + 1
+		newAnnotation[RayClusterRevisionAnnotationKey] = fmt.Sprintf("%d", newVersion)
+	}
+	if newAnnotation == nil {
+		newAnnotation = make(map[string]string)
+	}
+	e.ObjectNew.SetAnnotations(newAnnotation)
+	return true
 }
