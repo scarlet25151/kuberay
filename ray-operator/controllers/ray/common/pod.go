@@ -12,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	v1 "k8s.io/api/core/v1"
@@ -913,39 +912,15 @@ func GetPodRevision(pod v1.Pod) string {
 	return pod.Annotations[RayClusterRevisionAnnotationKey]
 }
 
-func CreateRayClusterEvent(e event.CreateEvent) bool {
-	if e.Object.GetObjectKind().GroupVersionKind().Kind != "RayCluster" {
-		return true
+func FindMaxPodRevisionIndex(pods []v1.Pod) int {
+	maxIndex := 0
+	for idx, pod := range pods {
+		if idx == 0 {
+			continue
+		}
+		if GetPodRevision(pod) > GetPodRevision(pods[maxIndex]) {
+			maxIndex = idx
+		}
 	}
-	annotations := e.Object.GetAnnotations()
-	if annotations == nil {
-		annotations = make(map[string]string)
-	}
-	if _, ok := annotations[RayClusterRevisionAnnotationKey]; !ok {
-		annotations[RayClusterRevisionAnnotationKey] = fmt.Sprintf("%d", 0)
-	}
-	e.Object.SetAnnotations(annotations)
-	return true
-}
-
-func UpdateRayClusterEvent(e event.UpdateEvent) bool {
-	if e.ObjectNew.GetObjectKind().GroupVersionKind().Kind != "RayCluster" {
-		return true
-	}
-	oldAnnotation := e.ObjectOld.GetAnnotations()
-	newAnnotation := e.ObjectNew.GetAnnotations()
-	if v, ok := oldAnnotation[RayClusterRevisionAnnotationKey]; !ok {
-		oldAnnotation[RayClusterRevisionAnnotationKey] = fmt.Sprintf("%d", 0)
-		e.ObjectOld.SetAnnotations(oldAnnotation)
-		return false
-	} else {
-		oldVersion, _ := strconv.ParseInt(v, 10, 64)
-		newVersion := oldVersion + 1
-		newAnnotation[RayClusterRevisionAnnotationKey] = fmt.Sprintf("%d", newVersion)
-	}
-	if newAnnotation == nil {
-		newAnnotation = make(map[string]string)
-	}
-	e.ObjectNew.SetAnnotations(newAnnotation)
-	return true
+	return maxIndex
 }

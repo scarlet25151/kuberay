@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	controller "sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -434,15 +436,10 @@ func (r *RayClusterReconciler) reconcilePods(instance *rayiov1alpha1.RayCluster)
 		common.SuccessfulClustersCounterInc(instance.Namespace)
 	} else if len(headPods.Items) > 1 {
 		r.Log.Info("reconcilePods ", "more than 1 head pod found for cluster", instance.Name)
-		itemLength := len(headPods.Items)
-		for index := 0; index < itemLength; index++ {
-			if headPods.Items[index].Status.Phase == corev1.PodRunning || headPods.Items[index].Status.Phase == corev1.PodPending {
-				// Remove the healthy pod  at index i from the list of pods to delete
-				headPods.Items[index] = headPods.Items[len(headPods.Items)-1] // replace last element with the healthy head.
-				headPods.Items = headPods.Items[:len(headPods.Items)-1]       // Truncate slice.
-				itemLength--
-			}
-		}
+
+		maxRevisionIndex := common.FindMaxPodRevisionIndex(headPods.Items)
+		r.Log.Info("reconcilePods ", "keep latest head pod", headPods.Items[maxRevisionIndex].Name)
+		headPods.Items = append(headPods.Items[:maxRevisionIndex], headPods.Items[maxRevisionIndex+1:]...)
 		// delete all the extra head pod pods
 		for _, extraHeadPodToDelete := range headPods.Items {
 			if err := r.Delete(context.TODO(), &extraHeadPodToDelete); err != nil {
@@ -861,8 +858,8 @@ func (r *RayClusterReconciler) SetupWithManager(mgr ctrl.Manager, reconcileConcu
 		b = batchscheduler.ConfigureReconciler(b)
 	}
 	predicates := predicate.Funcs{
-		CreateFunc: common.CreateRayClusterEvent,
-		UpdateFunc: common.UpdateRayClusterEvent,
+		CreateFunc: r.createRayClusterEvent,
+		UpdateFunc: r.updateRayClusterEvent,
 	}
 	return b.
 		WithOptions(controller.Options{MaxConcurrentReconciles: reconcileConcurrency}).
@@ -1136,4 +1133,80 @@ func (r *RayClusterReconciler) updateClusterState(instance *rayiov1alpha1.RayClu
 func (r *RayClusterReconciler) updateClusterReason(instance *rayiov1alpha1.RayCluster, clusterReason string) error {
 	instance.Status.Reason = clusterReason
 	return r.Status().Update(context.Background(), instance)
+}
+
+func (r *RayClusterReconciler) createRayClusterEvent(e event.CreateEvent) bool {
+	cluster, err := e.Object.(*rayiov1alpha1.RayCluster)
+	if !err {
+		return true
+	}
+	annotations := cluster.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+	}
+	if _, ok := annotations[common.RayClusterRevisionAnnotationKey]; !ok {
+		annotations[common.RayClusterRevisionAnnotationKey] = fmt.Sprintf("%d", 0)
+	}
+	cluster.SetAnnotations(annotations)
+	if err := r.Update(context.Background(), cluster); err != nil {
+		r.Log.Error(err, "Failed to update cluster revision", "cluster", cluster.Name)
+		return false
+	}
+	return true
+}
+
+func (r *RayClusterReconciler) updateRayClusterEvent(e event.UpdateEvent) bool {
+	oldCluster, err := e.ObjectOld.(*rayiov1alpha1.RayCluster)
+	if !err {
+		return true
+	}
+	newCluster, err := e.ObjectNew.(*rayiov1alpha1.RayCluster)
+	if !err {
+		return true
+	}
+	oldAnnotation := oldCluster.GetAnnotations()
+	if v, ok := oldAnnotation[common.RayClusterRevisionAnnotationKey]; !ok {
+		return true
+	} else {
+		if reflect.DeepEqual(oldCluster.Spec, newCluster.Spec) {
+			return false
+		}
+		if r.isScalingEvent(e) {
+			return false
+		}
+		oldRevision, _ := strconv.ParseInt(v, 10, 64)
+		newRevision := oldRevision + 1
+		newAnnotation := newCluster.GetAnnotations()
+		if newAnnotation == nil {
+			newAnnotation = make(map[string]string)
+		}
+		newAnnotation[common.RayClusterRevisionAnnotationKey] = fmt.Sprintf("%d", newRevision)
+		newCluster.SetAnnotations(newAnnotation)
+	}
+	if err := r.Update(context.Background(), newCluster); err != nil {
+		r.Log.Error(err, "Failed to update cluster revision", "cluster", newCluster.Name)
+		return false
+	}
+	return true
+}
+
+func (r *RayClusterReconciler) isScalingEvent(e event.UpdateEvent) bool {
+	oldCluster, err := e.ObjectOld.(*rayiov1alpha1.RayCluster)
+	if !err {
+		return false
+	}
+	newCluster, err := e.ObjectNew.(*rayiov1alpha1.RayCluster)
+	if !err {
+		return false
+	}
+
+	if oldCluster.Spec.HeadGroupSpec.Replicas != newCluster.Spec.HeadGroupSpec.Replicas {
+		return true
+	}
+	for i, oldWorkerGroupSpec := range oldCluster.Spec.WorkerGroupSpecs {
+		if newWorkerGroupSpec := newCluster.Spec.WorkerGroupSpecs[i]; oldWorkerGroupSpec.Replicas != newWorkerGroupSpec.Replicas {
+			return true
+		}
+	}
+	return false
 }

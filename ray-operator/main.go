@@ -23,7 +23,6 @@ import (
 
 	rayv1alpha1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1alpha1"
 	"github.com/ray-project/kuberay/ray-operator/controllers/ray/common"
-	"github.com/ray-project/kuberay/ray-operator/controllers/ray/common/global"
 	// +kubebuilder:scaffold:imports
 )
 
