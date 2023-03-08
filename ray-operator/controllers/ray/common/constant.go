@@ -22,7 +22,9 @@ const (
 	RayExternalStorageNSAnnotationKey = "ray.io/external-storage-namespace"
 	RayNodeHealthStateAnnotationKey   = "ray.io/health-state"
 
-	RayClusterRevisionAnnotationKey = "ray.io/cluster-revision"
+	RayClusterRevisionAnnotationKey     = "ray.io/cluster-revision"
+	RayClusterHeadUpdateAnnotationKey   = "ray.io/head-update"
+	RayClusterWorkerUpdateAnnotationKey = "ray.io/worker-update"
 
 	// Pod health state values
 	PodUnhealthy = "Unhealthy"

@@ -924,3 +924,12 @@ func FindMaxPodRevisionIndex(pods []v1.Pod) int {
 	}
 	return maxIndex
 }
+
+func PodConditionReady(pod v1.Pod) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type != v1.PodReady {
+			return false
+		}
+	}
+	return true
+}
